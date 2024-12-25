@@ -1,0 +1,54 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    fragment@0 {
+        target-path = "/";
+        __overlay__ {
+            #address-cells = <1>;
+            #size-cells = <1>;
+
+            yp_can@ff200000 {
+                compatible = "yellowpirat,can-fifo";
+                reg = <0xff200000 0x1000>;
+                label = "can0";
+                status = "okay";
+            };
+
+            yp_can@ff201000 {
+                compatible = "yellowpirat,can-fifo";
+                reg = <0xff201000 0x1000>;
+                label = "can1";
+                status = "okay";
+            };
+
+            yp_can@ff202000 {
+                compatible = "yellowpirat,can-fifo";
+                reg = <0xff202000 0x1000>;
+                label = "can2";
+                status = "okay";
+            };
+
+            yp_can@ff203000 {
+                compatible = "yellowpirat,can-fifo";
+                reg = <0xff203000 0x1000>;
+                label = "can3";
+                status = "okay";
+            };
+
+            yp_can@ff204000 {
+                compatible = "yellowpirat,can-fifo";
+                reg = <0xff204000 0x1000>;
+                label = "can4";
+                status = "okay";
+            };
+
+            yp_can@ff205000 {
+                compatible = "yellowpirat,can-fifo";
+                reg = <0xff205000 0x1000>;
+                label = "can5";
+                status = "okay";
+            };
+        };
+    };
+};
