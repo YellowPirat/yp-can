@@ -1,0 +1,8 @@
+yp-can-dkms (1.0.0) unstable; urgency=medium
+
+  * Initial release
+  * CAN driver for YellowPirat project on DE1-SoC FPGA
+  * Supports up to 6 CAN interfaces
+  * Implements SocketCAN interface
+
+ -- YellowPirat Team <emirhangoktas01@gmail.com>  Sat, 28 Dec 2024 12:00:00 +0000

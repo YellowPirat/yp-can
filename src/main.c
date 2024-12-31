@@ -1,16 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Linux CAN driver for YellowPirat project
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include "core.h"
-#include "regs.h"
 
-#define DRV_NAME "yp_can"
+#define DRV_NAME "yp-can"
 
 static const struct of_device_id yp_can_of_match[] = {
         {.compatible = "yellowpirat,can-fifo"},
@@ -19,15 +17,8 @@ static const struct of_device_id yp_can_of_match[] = {
 MODULE_DEVICE_TABLE(of, yp_can_of_match);
 
 static int yp_can_probe(struct platform_device* pdev) {
-    struct net_device* ndev;
-    struct yp_can_priv* priv;
-    struct resource* mem;
-    void __iomem * addr;
-    const char* label;
-    int err;
-
     // Get label from device tree
-    label = of_get_property(pdev->dev.of_node, "label", NULL);
+    const char* label = of_get_property(pdev->dev.of_node, "label", NULL);
     if (!label) {
         dev_err(&pdev->dev, "no label provided in device tree\n");
         return -EINVAL;
@@ -36,26 +27,26 @@ static int yp_can_probe(struct platform_device* pdev) {
     dev_info(&pdev->dev, "%s: probing YellowPirat CAN device\n", label);
 
     // Get memory resource
-    mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+    struct resource* mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
     if (!mem) {
         dev_err(&pdev->dev, "no memory resource provided\n");
         return -ENODEV;
     }
 
-    addr = devm_ioremap_resource(&pdev->dev, mem);
+    void* addr = devm_ioremap_resource(&pdev->dev, mem);
     if (IS_ERR(addr)) {
         dev_err(&pdev->dev, "%s: cannot ioremap memory region\n", label);
         return PTR_ERR(addr);
     }
 
     // Allocate network device
-    ndev = alloc_candev(sizeof(struct yp_can_priv), 0);
+    struct net_device* ndev = alloc_candev(sizeof(struct yp_can_priv), 0);
     if (!ndev) {
         dev_err(&pdev->dev, "%s: cannot allocate CAN device\n", label);
         return -ENOMEM;
     }
 
-    priv = netdev_priv(ndev);
+    struct yp_can_priv* priv = netdev_priv(ndev);
     priv->mem_base = addr;
     priv->ndev = ndev;
     priv->label = label;
@@ -64,6 +55,7 @@ static int yp_can_probe(struct platform_device* pdev) {
     timer_setup(&priv->timer, yp_can_poll, 0);
 
     // Extract instance ID from label
+    int err;
     if (sscanf(label, "can%d", &priv->instance_id) != 1) {
         dev_err(&pdev->dev, "%s: invalid label format\n", label);
         err = -EINVAL;

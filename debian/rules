@@ -1,0 +1,43 @@
+#!/usr/bin/make -f
+
+include /usr/share/dpkg/pkg-info.mk
+
+DTC = /usr/bin/dtc
+
+%:
+	dh $@ --with dkms
+
+override_dh_auto_build:
+	$(DTC) -@ -I dts -O dtb -o yp-can.dtbo dts/yp-can.dts
+
+override_dh_install:
+	# Install source files
+	dh_install src/* -X*.cmd -X*.d -X*.ko -X*.mod -X*.mod.c -X*.o -Xmodules.order \
+		usr/src/$(DEB_SOURCE)-$(DEB_VERSION_UPSTREAM)/
+	dh_install Makefile usr/src/$(DEB_SOURCE)-$(DEB_VERSION_UPSTREAM)/
+	dh_install dts/* usr/src/$(DEB_SOURCE)-$(DEB_VERSION_UPSTREAM)/dts/
+
+	# Install compiled dtbo
+	install -D -m 0644 yp-can.dtbo debian/$(DEB_SOURCE)/boot/overlays/yp-can.dtbo
+
+	# Create and install dkms.conf
+	sed 's/#MODULE_VERSION#/$(DEB_VERSION_UPSTREAM)/g' debian/yp-can.dkms > debian/dkms.conf
+	install -D -m 0644 debian/dkms.conf \
+		debian/$(DEB_SOURCE)/usr/src/$(DEB_SOURCE)-$(DEB_VERSION_UPSTREAM)/dkms.conf
+
+	# Configure postinst and prerm scripts
+	sed -i 's/#VERSION#/$(DEB_VERSION_UPSTREAM)/g' debian/postinst
+	sed -i 's/#VERSION#/$(DEB_VERSION_UPSTREAM)/g' debian/prerm
+
+	# Install modules-load configuration
+	install -D -m 0644 debian/yp-can.conf \
+		debian/$(DEB_SOURCE)/etc/modules-load.d/yp-can.conf
+
+override_dh_dkms:
+	dh_dkms -V $(DEB_VERSION_UPSTREAM)
+
+# do nothing for these targets
+override_dh_auto_configure:
+override_dh_auto_test:
+override_dh_auto_install:
+override_dh_auto_clean:

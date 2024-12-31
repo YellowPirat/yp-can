@@ -1,0 +1,21 @@
+# make artifacts
+*.cmd
+*.d
+*.ko
+*.mod
+*.mod.c
+*.o
+modules.order
+/Module.symvers
+
+# debuild artifacts
+/debian/*.debhelper
+/debian/*.debhelper.log
+/debian/*.substvars
+/debian/debhelper-build-stamp
+/debian/files
+
+# IDE artifacts
+*.kate-swp
+/*.kdev4
+/.vscode

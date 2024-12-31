@@ -1,0 +1,2 @@
+obj-m += yp-can.o
+yp-can-y += main.o hw.o netdev.o

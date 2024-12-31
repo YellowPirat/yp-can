@@ -1,10 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0+
 #include <linux/netdevice.h>
 #include <linux/can/dev.h>
 #include "core.h"
-#include "regs.h"
 
-#define YP_CAN_NAPI_WEIGHT 256  // Hardware FIFO size
+#define YP_CAN_NAPI_WEIGHT 32  // Hardware FIFO size
 
 static int yp_can_start(struct net_device* ndev) {
     struct yp_can_priv* priv = netdev_priv(ndev);
@@ -16,7 +15,7 @@ static int yp_can_start(struct net_device* ndev) {
     napi_enable(&priv->napi);
 
     // Start polling timer
-    mod_timer(&priv->timer, jiffies + msecs_to_jiffies(1));
+    mod_timer(&priv->timer, jiffies + msecs_to_jiffies(POLL_INTERVAL_MS));
 
     priv->can.state = CAN_STATE_ERROR_ACTIVE;
     netif_start_queue(ndev);

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0+
 #include <linux/can.h>
 #include <linux/io.h>
 #include <linux/netdevice.h>
@@ -6,6 +6,9 @@
 #include "core.h"
 #include "regs.h"
 
+// Access to AXI bus has to be synchronized otherwise system locks up
+// Ideally, a dedicated driver should be used for this, but for simplicity we use a spinlock
+static DEFINE_SPINLOCK(yp_can_bus_lock);
 static ktime_t startup_time; // Store system time at boot
 
 void yp_can_set_base_time(void) {
@@ -18,15 +21,12 @@ void yp_can_set_base_time(void) {
     startup_time = ktime_sub(current_time, since_boot);
 }
 
-static void yp_can_handle_error(struct yp_can_priv* priv, struct yp_can_regs* regs) {
-    struct net_device* ndev = priv->ndev;
-    struct sk_buff* skb;
-    struct can_frame* cf;
-
+static void yp_can_handle_error(const struct yp_can_priv* priv) {
     // Allocate error frame
-    skb = alloc_can_err_skb(ndev, &cf);
+    struct can_frame* cf;
+    struct sk_buff* skb = alloc_can_err_skb(priv->ndev, &cf);
     if (!skb) {
-        netdev_err(ndev, "Cannot allocate error SKB\n");
+        netdev_err(priv->ndev, "Cannot allocate error SKB\n");
         return;
     }
 
@@ -36,162 +36,144 @@ static void yp_can_handle_error(struct yp_can_priv* priv, struct yp_can_regs* re
     memset(cf->data, 0, CAN_ERR_DLC);
 
     // Error frame handling based on error type from spec
-    if (regs->frame_type.stuff_error) {
+    if (priv->regs.frame_type.stuff_error) {
         // Bit stuffing error: 6 bits of same level between SOF and CRC
         cf->can_id |= CAN_ERR_PROT;
         cf->data[2] = CAN_ERR_PROT_STUFF;
-        netdev_warn(ndev, "Bit stuffing error detected\n");
+        netdev_warn(priv->ndev, "Bit stuffing error detected\n");
     }
 
-    if (regs->frame_type.form_error) {
+    if (priv->regs.frame_type.form_error) {
         // Form error: Invalid bit level in SOF/EOF or delimiters
         cf->can_id |= CAN_ERR_PROT;
         cf->data[2] = CAN_ERR_PROT_FORM;
-        netdev_warn(ndev, "Form error detected\n");
+        netdev_warn(priv->ndev, "Form error detected\n");
     }
 
-    if (regs->frame_type.sample_error) {
+    if (priv->regs.frame_type.sample_error) {
         // Sample error (ACK error): No receiver made ACK slot dominant
         cf->can_id |= CAN_ERR_ACK;
-        netdev_warn(ndev, "ACK error detected\n");
+        netdev_warn(priv->ndev, "ACK error detected\n");
     }
 
-    if (regs->frame_type.crc_error) {
+    if (priv->regs.frame_type.crc_error) {
         // CRC error: Calculated CRC differs from received
         cf->can_id |= CAN_ERR_PROT;
         cf->data[2] = CAN_ERR_PROT_LOC_CRC_SEQ;
-        netdev_warn(ndev, "CRC error detected\n");
+        netdev_warn(priv->ndev, "CRC error detected\n");
     }
 
     // Pass error frame up the stack
     netif_receive_skb(skb);
-    ndev->stats.rx_errors++;
+    priv->ndev->stats.rx_errors++;
 }
 
-void yp_can_parse_frame(struct yp_can_priv* priv, struct can_frame* cf, struct yp_can_regs* regs, struct sk_buff* skb) {
+void yp_can_parse_frame(struct yp_can_priv* priv, struct can_frame* cf, struct sk_buff* skb) {
+    // Check for peripheral errors
+    if (priv->regs.error_status.peripheral_error) {
+        netdev_err(priv->ndev, "%s: peripheral error: %x\n",
+                   priv->label, priv->regs.error_status.peripheral_error);
+    }
+
+    // Check for missed frames
+    if (priv->regs.missed_status.missed_frames) {
+        netdev_warn(priv->ndev, "%s: missed frames: %d\n",
+                    priv->label, priv->regs.missed_status.missed_frames);
+        if (priv->regs.missed_status.overflow)
+            netdev_warn(priv->ndev, "%s: missed frames counter overflow\n",
+                        priv->label);
+    }
+
     // Check for any error bits before processing
-    if (regs->frame_type.stuff_error || regs->frame_type.form_error ||
-        regs->frame_type.sample_error || regs->frame_type.crc_error) {
-        yp_can_handle_error(priv, regs);
+    if (priv->regs.frame_type.stuff_error || priv->regs.frame_type.form_error ||
+        priv->regs.frame_type.sample_error || priv->regs.frame_type.crc_error) {
+        yp_can_handle_error(priv);
         return;
     }
 
     // Apply timestamp offset
-    skb->tstamp = ktime_add(startup_time, ns_to_ktime(regs->timestamp * 1000)); // Convert µs to ns
+    skb->tstamp = ktime_add(startup_time, ns_to_ktime(priv->regs.timestamp * 1000)); // Convert µs to ns
 
     // Process frame information
-    cf->can_dlc = regs->dlc.dlc;
+    cf->can_dlc = priv->regs.dlc.dlc;
 
     // Process CAN ID and flags
-    cf->can_id = regs->can_id.id;
-    if (regs->can_id.eff)
+    cf->can_id = priv->regs.can_id.id;
+    if (priv->regs.can_id.eff)
         cf->can_id |= CAN_EFF_FLAG;
-    if (regs->can_id.rtr)
+    if (priv->regs.can_id.rtr)
         cf->can_id |= CAN_RTR_FLAG;
-    if (regs->can_id.err)
+    if (priv->regs.can_id.err)
         cf->can_id |= CAN_ERR_FLAG;
 
-    // Handle data based on length
-    u32 data_low = (u32)(regs->data & 0xFFFFFFFF);
-    u32 data_high = (u32)(regs->data >> 32);
-
-    if (cf->can_dlc <= 4) {
-        // For short frames (≤4 bytes), data is in data_low in big endian
-        data_low = be32_to_cpu(data_low);
-        memcpy(cf->data, &data_low, cf->can_dlc);
-    }
-    else {
-        // For long frames (>4 bytes), need to handle both registers
-        // High word goes to lower bytes, low word goes to higher bytes
-        data_high = be32_to_cpu(data_high);
-        data_low = be32_to_cpu(data_low);
-        memcpy(cf->data, &data_high, 4); // First 4 bytes from high
-        memcpy(cf->data + 4, &data_low, 4); // Last 4 bytes from low
-    }
+    be64_to_cpus(&priv->regs.data);
+    memcpy(cf->data, &priv->regs.data, 8);
 }
 
 
-static void yp_can_read_regs(struct yp_can_priv* priv, struct yp_can_regs* regs) {
+static void yp_can_read_regs(struct yp_can_priv* priv) {
     void __iomem * base = priv->mem_base;
     u32 temp_lo, temp_hi;
+    unsigned long flags;
 
-    // Read status registers first
-    regs->buffer_status.raw = readl(base + REG_STATUS_BUFFER);
-    regs->error_status.raw = readl(base + REG_STATUS_ERROR);
-    regs->missed_status.raw = readl(base + REG_STATUS_MISSED);
+    spin_lock_irqsave(&yp_can_bus_lock, flags);
 
-    // Then read frame registers
-    regs->frame_type.raw = readl(base + REG_FRAME_TYPE);
+    // Read status registers
+    priv->regs.error_status.raw = readl(priv->mem_base + REG_STATUS_ERROR);
+    priv->regs.missed_status.raw = readl(priv->mem_base + REG_STATUS_MISSED);
+
+    // Read frame registers
+    priv->regs.frame_type.raw = readl(base + REG_FRAME_TYPE);
 
     // Read 64-bit timestamp
-    // TODO: This has to be reverted
     temp_lo = readl(base + REG_TIMESTAMP_LOW);
     temp_hi = readl(base + REG_TIMESTAMP_HIGH);
-    regs->timestamp = ((u64)temp_hi << 32) | temp_lo;
+    priv->regs.timestamp = ((u64)temp_hi << 32) | temp_lo;
 
-    regs->can_id.raw = readl(base + REG_CAN_ID);
-    regs->dlc.raw = readl(base + REG_DLC);
-    regs->crc.raw = readl(base + REG_CRC);
+    priv->regs.can_id.raw = readl(base + REG_CAN_ID);
+    priv->regs.dlc.raw = readl(base + REG_DLC);
+    priv->regs.crc.raw = readl(base + REG_CRC);
 
     // Read 64-bit data
     temp_lo = readl(base + REG_DATA_LOW);
     mb(); // Memory barrier before final read that advances FIFO
     temp_hi = readl(base + REG_DATA_HIGH);
-    regs->data = ((u64)temp_hi << 32) | temp_lo;
+    priv->regs.data = ((u64)temp_lo << 32) | temp_hi;
+
+    spin_unlock_irqrestore(&yp_can_bus_lock, flags);
 }
 
-u32 yp_can_check_status(struct yp_can_priv* priv) {
-    struct yp_can_regs regs;
-
+u32 yp_can_get_buffer_usage(struct yp_can_priv* priv) {
     // Read status registers
-    regs.buffer_status.raw = readl(priv->mem_base + REG_STATUS_BUFFER);
-    regs.error_status.raw = readl(priv->mem_base + REG_STATUS_ERROR);
-    regs.missed_status.raw = readl(priv->mem_base + REG_STATUS_MISSED);
+    unsigned long flags;
+    spin_lock_irqsave(&yp_can_bus_lock, flags);
 
-    // Check for peripheral errors
-    if (regs.error_status.peripheral_error) {
-        netdev_err(priv->ndev, "%s: peripheral error: %x\n",
-                   priv->label, regs.error_status.peripheral_error);
-    }
+    priv->regs.buffer_status.raw = readl(priv->mem_base + REG_STATUS_BUFFER);
 
-    // Check for missed frames
-    if (regs.missed_status.missed_frames) {
-        netdev_warn(priv->ndev, "%s: missed frames: %d\n",
-                    priv->label, regs.missed_status.missed_frames);
-        if (regs.missed_status.overflow)
-            netdev_warn(priv->ndev, "%s: missed frames counter overflow\n",
-                        priv->label);
-    }
+    spin_unlock_irqrestore(&yp_can_bus_lock, flags);
 
-    return regs.buffer_status.buffer_usage;
+    return priv->regs.buffer_status.buffer_usage;
 }
 
-int yp_can_rx_poll(struct napi_struct* napi, int budget) {
+int yp_can_rx_poll(struct napi_struct* napi, const int budget) {
     struct yp_can_priv* priv = container_of(napi, struct yp_can_priv, napi);
-    struct net_device* ndev = priv->ndev;
     int received = 0;
-    struct yp_can_regs regs;
 
     while (received < budget) {
-        struct sk_buff* skb;
-        struct can_frame* cf;
+        if (!yp_can_get_buffer_usage(priv)) break;
 
         // Read all registers for current frame
-        yp_can_read_regs(priv, &regs);
+        yp_can_read_regs(priv);
+        struct can_frame* cf;
+        struct sk_buff* skb = alloc_can_skb(priv->ndev, &cf);
+        if (!skb) break;
 
-        if (!regs.buffer_status.buffer_usage)
-            break;
-
-        skb = alloc_can_skb(ndev, &cf);
-        if (!skb)
-            break;
-
-        yp_can_parse_frame(priv, cf, &regs, skb);
+        yp_can_parse_frame(priv, cf, skb);
 
         // Only increment stats for valid frames
         if (!(cf->can_id & CAN_ERR_FLAG)) {
-            ndev->stats.rx_packets++;
-            ndev->stats.rx_bytes += cf->can_dlc;
+            priv->ndev->stats.rx_packets++;
+            priv->ndev->stats.rx_bytes += cf->can_dlc;
         }
 
         netif_receive_skb(skb);
@@ -200,7 +182,7 @@ int yp_can_rx_poll(struct napi_struct* napi, int budget) {
 
     if (received < budget) {
         napi_complete_done(napi, received);
-        mod_timer(&priv->timer, jiffies + msecs_to_jiffies(1));
+        mod_timer(&priv->timer, jiffies + msecs_to_jiffies(POLL_INTERVAL_MS));
     }
 
     return received;
@@ -210,15 +192,9 @@ void yp_can_poll(struct timer_list* t) {
     struct yp_can_priv* priv = from_timer(priv, t, timer);
     struct napi_struct* napi = &priv->napi;
 
-    if (yp_can_check_status(priv) > 0) {
-        if (napi_schedule_prep(napi)) {
-            // Disable timer while NAPI is processing
-            del_timer(&priv->timer);
-            __napi_schedule(napi);
-        }
-    }
+    if (yp_can_get_buffer_usage(priv) > 0 && napi_schedule_prep(napi)) { __napi_schedule(napi); }
     else {
         // No frames available, check again later
-        mod_timer(&priv->timer, jiffies + msecs_to_jiffies(1));
+        mod_timer(&priv->timer, jiffies + msecs_to_jiffies(POLL_INTERVAL_MS));
     }
 }

@@ -1,0 +1,19 @@
+#!/bin/sh
+set -e
+
+NAME="yp-can-dkms"
+VERSION="#VERSION#"
+
+case "$1" in
+    remove|upgrade|deconfigure)
+        # Remove overlay from config.txt
+        if [ -f /boot/config.txt ]; then
+            sed -i '/^dtoverlay=yp-can/d' /boot/config.txt
+        fi
+
+        dkms remove -m ${NAME} -v ${VERSION} --all || true
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

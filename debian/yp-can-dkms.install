@@ -1,0 +1,4 @@
+src/* usr/src/yp-can-dkms-1.0.0/src/
+Makefile usr/src/yp-can-dkms-1.0.0/
+dts/* usr/src/yp-can-dkms-1.0.0/dts/
+debian/yp-can.conf etc/modules-load.d/

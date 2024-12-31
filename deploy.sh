@@ -3,7 +3,7 @@
 # Default values
 DEFAULT_USER="yellowpirat"
 DEFAULT_PORT="22"
-DEFAULT_TARGET_DIR="/home/yellowpirat/yp_can"
+DEFAULT_TARGET_DIR="/home/yellowpirat/yp-can"
 
 # Script usage
 usage() {
@@ -13,7 +13,7 @@ usage() {
     echo "  -i IP_ADDRESS   Target device IP address (required)"
     echo "  -u USERNAME     SSH username (default: yellowpirat)"
     echo "  -p PORT        SSH port (default: 22)"
-    echo "  -d TARGET_DIR  Target directory (default: /home/yellowpirat/yp_can)"
+    echo "  -d TARGET_DIR  Target directory (default: /home/yellowpirat/yp-can)"
     echo "  -h            Show this help message"
     exit 1
 }
@@ -57,20 +57,32 @@ print_error() {
 
 # Create directory structure on target
 print_status "Creating directory structure on target..."
-ssh -p "$PORT" "$USERNAME@$IP_ADDRESS" "mkdir -p $TARGET_DIR/{src,include,dts}"
+ssh -p "$PORT" "$USERNAME@$IP_ADDRESS" "mkdir -p $TARGET_DIR/{src,dts,debian}"
 
 # Transfer files
 print_status "Transferring files..."
 
-# Transfer source files
-scp -P "$PORT" src/*.{c,h} "$USERNAME@$IP_ADDRESS:$TARGET_DIR/src/" || {
-    print_error "Failed to transfer source files"
+# Transfer debian directory
+scp -P "$PORT" -r debian/* "$USERNAME@$IP_ADDRESS:$TARGET_DIR/debian" || {
+    print_error "Failed to transfer debian directory"
     exit 1
 }
 
 # Transfer DTS files
 scp -P "$PORT" dts/*.dts "$USERNAME@$IP_ADDRESS:$TARGET_DIR/dts/" || {
     print_error "Failed to transfer DTS files"
+    exit 1
+}
+
+# Transfer source files
+scp -P "$PORT" src/* "$USERNAME@$IP_ADDRESS:$TARGET_DIR/src/" || {
+    print_error "Failed to transfer source files"
+    exit 1
+}
+
+# Transfer Kbuild
+scp -P "$PORT" Kbuild "$USERNAME@$IP_ADDRESS:$TARGET_DIR/" || {
+    print_error "Failed to transfer Makefile"
     exit 1
 }
 

@@ -1,0 +1,15 @@
+Source: yp-can-dkms
+Section: kernel
+Priority: optional
+Maintainer: Ahmet Emirhan Göktas <emirhangoktas01@gmail.com>
+Build-Depends: debhelper-compat (= 12), dkms, dh-dkms, device-tree-compiler
+Standards-Version: 4.5.0
+
+Package: yp-can-dkms
+Architecture: all
+Depends: ${misc:Depends}, dkms
+Description: DKMS source for the YellowPirat CAN driver
+ This package provides the dkms source code for the YellowPirat CAN driver.
+ This is a Linux kernel driver for the YellowPirat CAN core implemented
+ on the DE1-SoC FPGA. The driver supports multiple CAN interfaces and
+ provides standard SocketCAN integration.
