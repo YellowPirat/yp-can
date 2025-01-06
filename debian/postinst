@@ -14,13 +14,6 @@ case "$1" in
             mkdir -p /boot/overlays
         fi
 
-        if [ -f /usr/src/${NAME}-${VERSION}/dts/yp-can.dtbo ]; then
-            cp /usr/src/${NAME}-${VERSION}/dts/yp-can.dtbo /boot/overlays/
-        else
-            echo "Error: DT overlay not found"
-            exit 1
-        fi
-
         # Add overlay to config.txt if not already present
         if [ -f /boot/config.txt ] && ! grep -q "^dtoverlay=yp-can" /boot/config.txt; then
             echo "dtoverlay=yp-can" >> /boot/config.txt

@@ -16,6 +16,12 @@
 #define REG_CRC              0x20
 #define REG_DATA_LOW         0x24
 #define REG_DATA_HIGH        0x28
+#define REG_SYNC_SEG        0x2C
+#define REG_PROP_SEG        0x30
+#define REG_PHASE_SEG1      0x34
+#define REG_PHASE_SEG2      0x38
+#define REG_QUANTUM_PRESC   0x3C
+#define REG_DRIVER_RESET    0x40
 
 // Register structures
 union buffer_status_reg {

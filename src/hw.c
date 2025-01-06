@@ -21,7 +21,71 @@ void yp_can_set_base_time(void) {
     startup_time = ktime_sub(current_time, since_boot);
 }
 
-static void yp_can_handle_error(const struct yp_can_priv* priv) {
+static void yp_can_write_timing_regs(struct yp_can_priv* priv, struct can_bittiming* bt) {
+    unsigned long flags;
+    // struct can_bittiming* bt = &priv->can.bittiming;
+    void __iomem * base = priv->mem_base;
+
+    spin_lock_irqsave(&yp_can_bus_lock, flags);
+
+    writel(1, base + REG_SYNC_SEG); // Always 1
+    writel(bt->prop_seg, base + REG_PROP_SEG);
+    writel(bt->phase_seg1, base + REG_PHASE_SEG1);
+    writel(bt->phase_seg2, base + REG_PHASE_SEG2);
+    writel(bt->brp, base + REG_QUANTUM_PRESC);
+
+    spin_unlock_irqrestore(&yp_can_bus_lock, flags);
+}
+
+static void yp_can_reset_registers(struct yp_can_priv* priv) {
+    unsigned long flags;
+
+    spin_lock_irqsave(&yp_can_bus_lock, flags);
+
+    writel(1, priv->mem_base + REG_DRIVER_RESET);
+    mb(); // Memory barrier before clearing reset
+    writel(0, priv->mem_base + REG_DRIVER_RESET); // Clear reset
+
+    spin_unlock_irqrestore(&yp_can_bus_lock, flags);
+}
+
+int yp_can_set_bittiming(struct net_device* ndev) {
+    struct yp_can_priv* priv = netdev_priv(ndev);
+    const struct can_bittiming* bt = &priv->can.bittiming;
+    struct can_bittiming bittiming = {0};
+
+    switch (bt->bitrate) {
+    case 500000:
+        bittiming.prop_seg = 5;
+        bittiming.phase_seg1 = 7;
+        bittiming.phase_seg2 = 7;
+        bittiming.brp = 4;
+        break;
+    case 1000000:
+        bittiming.prop_seg = 2;
+        bittiming.phase_seg1 = 4;
+        bittiming.phase_seg2 = 3;
+        bittiming.brp = 4;
+        break;
+    default:
+        netdev_err(priv->ndev, "Unsupported bitrate: %d\n", bt->bitrate);
+        return -EINVAL;
+    }
+
+    // Write to hardware
+    yp_can_write_timing_regs(priv, &bittiming);
+
+    // Reset registers after changing bittiming
+    yp_can_reset_registers(priv);
+
+    netdev_info(
+        ndev, "Set bittiming: %d bps, PS1: %d, PS2: %d, Prop: %d, BRP: %d\n", bt->bitrate, bittiming.phase_seg1,
+        bittiming.phase_seg2, bittiming.prop_seg, bittiming.brp);
+
+    return 0;
+}
+
+static void yp_can_handle_error(struct yp_can_priv* priv) {
     // Allocate error frame
     struct can_frame* cf;
     struct sk_buff* skb = alloc_can_err_skb(priv->ndev, &cf);
@@ -29,6 +93,7 @@ static void yp_can_handle_error(const struct yp_can_priv* priv) {
         netdev_err(priv->ndev, "Cannot allocate error SKB\n");
         return;
     }
+    char error_msg[64];
 
     // Set default error flags
     cf->can_id = CAN_ERR_FLAG;
@@ -40,27 +105,37 @@ static void yp_can_handle_error(const struct yp_can_priv* priv) {
         // Bit stuffing error: 6 bits of same level between SOF and CRC
         cf->can_id |= CAN_ERR_PROT;
         cf->data[2] = CAN_ERR_PROT_STUFF;
-        netdev_warn(priv->ndev, "Bit stuffing error detected\n");
+        snprintf(error_msg, 64, "Bit stuffing error detected");
     }
 
     if (priv->regs.frame_type.form_error) {
         // Form error: Invalid bit level in SOF/EOF or delimiters
         cf->can_id |= CAN_ERR_PROT;
         cf->data[2] = CAN_ERR_PROT_FORM;
-        netdev_warn(priv->ndev, "Form error detected\n");
+        snprintf(error_msg, 64, "Form error detected");
     }
 
     if (priv->regs.frame_type.sample_error) {
         // Sample error (ACK error): No receiver made ACK slot dominant
         cf->can_id |= CAN_ERR_ACK;
-        netdev_warn(priv->ndev, "ACK error detected\n");
+        snprintf(error_msg, 64, "ACK error detected");
     }
 
     if (priv->regs.frame_type.crc_error) {
         // CRC error: Calculated CRC differs from received
         cf->can_id |= CAN_ERR_PROT;
         cf->data[2] = CAN_ERR_PROT_LOC_CRC_SEQ;
-        netdev_warn(priv->ndev, "CRC error detected\n");
+        snprintf(error_msg, 64, "CRC error detected");
+    }
+
+    unsigned long now = get_jiffies_64();
+
+    if (time_after(now, priv->last_error_log_time + msecs_to_jiffies(ERROR_TIMEOUT_MS))) {
+        priv->last_error_log_time = now;
+        if (priv->regs.frame_type.stuff_error || priv->regs.frame_type.form_error ||
+            priv->regs.frame_type.sample_error || priv->regs.frame_type.crc_error) {
+            netdev_warn(priv->ndev, "%s\n", error_msg);
+        }
     }
 
     // Pass error frame up the stack
@@ -76,12 +151,21 @@ void yp_can_parse_frame(struct yp_can_priv* priv, struct can_frame* cf, struct s
     }
 
     // Check for missed frames
+    unsigned long now = get_jiffies_64();
     if (priv->regs.missed_status.missed_frames) {
-        netdev_warn(priv->ndev, "%s: missed frames: %d\n",
-                    priv->label, priv->regs.missed_status.missed_frames);
-        if (priv->regs.missed_status.overflow)
-            netdev_warn(priv->ndev, "%s: missed frames counter overflow\n",
-                        priv->label);
+        if (time_after(now, priv->last_error_log_time + msecs_to_jiffies(ERROR_TIMEOUT_MS))) {
+            priv->last_error_log_time = now;
+            netdev_warn(priv->ndev, "%s: missed frames: %d\n",
+                        priv->label, priv->regs.missed_status.missed_frames);
+        }
+        if (priv->regs.missed_status.overflow) {
+            if (time_after(now, priv->last_error_log_time + msecs_to_jiffies(ERROR_TIMEOUT_MS))) {
+                priv->last_error_log_time = now;
+                netdev_warn(priv->ndev, "%s: missed frames counter overflow\n",
+                            priv->label);
+            }
+        }
+        yp_can_reset_registers(priv);
     }
 
     // Check for any error bits before processing

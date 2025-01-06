@@ -3,10 +3,27 @@
 #include <linux/can/dev.h>
 #include "core.h"
 
-#define YP_CAN_NAPI_WEIGHT 32  // Hardware FIFO size
+// CAN timing constraints for Linux CAN stack
+static const struct can_bittiming_const yp_can_bittiming_const = {
+        .name = "yp_can",
+        .tseg1_min = YP_CAN_MIN_TSEG1,
+        .tseg1_max = YP_CAN_MAX_TSEG1,
+        .tseg2_min = YP_CAN_MIN_TSEG2,
+        .tseg2_max = YP_CAN_MAX_TSEG2,
+        .sjw_max = YP_CAN_SJW,
+        .brp_min = 1,
+        .brp_max = YP_CAN_MAX_BRP,
+        .brp_inc = 1,
+    };
 
 static int yp_can_start(struct net_device* ndev) {
     struct yp_can_priv* priv = netdev_priv(ndev);
+
+    // Check if bittiming is set
+    if (!priv->can.bittiming.bitrate) {
+        netdev_err(ndev, "Cannot start without bittiming being set. Please configure bitrate first.\n");
+        return -EINVAL;
+    }
 
     // Set base time for timestamp calculations
     yp_can_set_base_time();
@@ -49,9 +66,10 @@ int yp_can_setup_netdev(struct net_device* ndev) {
 
     // Set CAN device properties
     priv->can.ctrlmode_supported = 0x02; // CAN_CTRLMODE_RX_ONLY
-    priv->can.bittiming_const = NULL;
-    priv->can.do_set_bittiming = NULL;
     priv->can.do_set_mode = NULL;
+    priv->can.bittiming_const = &yp_can_bittiming_const;
+    priv->can.do_set_bittiming = yp_can_set_bittiming;
+    priv->can.clock.freq = YP_CAN_CLOCK_HZ;
 
     // Initialize NAPI
     netif_napi_add_weight(ndev, &priv->napi, yp_can_rx_poll, YP_CAN_NAPI_WEIGHT);
